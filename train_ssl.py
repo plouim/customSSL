@@ -174,6 +174,8 @@ def save_checkpoint(state, is_best, checkpoint, filename='checkpoint.pth.tar'):
 
 def interleave(x, size):
     s = list(x.shape)
+    print(s)
+    print(x.reshape([-1, size] + s[1:]).transpose(0, 1).reshape([-1] + s[1:]).shape)
     return x.reshape([-1, size] + s[1:]).transpose(0, 1).reshape([-1] + s[1:])
 
 
@@ -210,6 +212,11 @@ def main():
             RandAugmentMC(n=2, m=10),
             transforms.Normalize(mean=args.mean, std=args.std)
     ])
+    test_tf = transforms.Compose([
+            transforms.Resize((args.img_size,args.img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=args.mean, std=args.std)
+        ])
     # Load labeled dataset, unlabeled dataset using waek, strong transformation
     labeled_train_dataset = ImageFolder(
         root=args.labeled_img_dir,
@@ -222,7 +229,7 @@ def main():
         )
     test_dataset = ImageFolder(
         root=args.unlabeled_img_dir + '/../validation/',
-        transform=None,
+        transform=test_tf,
         class_map=args.class_map
         )
     
@@ -321,11 +328,15 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
             data_time.update(time.time() - end)
             batch_size = inputs_x.shape[0]
-            inputs = interleave(
-                torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
+            if inputs_x.shape[0]+inputs_u_w.shape[0]+inputs_u_s.shape[0] % 2*args.mu+1 == 0:
+                inputs = interleave(
+                    torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
+            else:
+                inputs = torch.cat((inputs_x, inputs_u_w, inputs_u_s)).to(args.device)
             targets_x = targets_x.to(args.device)
             logits = model(inputs)
-            logits = de_interleave(logits, 2*args.mu+1)
+            if inputs_x.shape[0]+inputs_u_w.shape[0]+inputs_u_s.shape[0] % 2*args.mu+1 == 0:
+                logits = de_interleave(logits, 2*args.mu+1)
             logits_x = logits[:batch_size]
             logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
             del logits
@@ -336,9 +347,14 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
             mask = max_probs.ge(args.threshold).float()
 
+            #  print('u_s ', logits_u_s)
+            #  print('target_u  ', targets_u)
+            #  print('CE ', F.cross_entropy(logits_u_s, targets_u,
+                                  #  reduction='none'))
+            #  print('mask ', mask)
             Lu = (F.cross_entropy(logits_u_s, targets_u,
                                   reduction='none') * mask).mean()
-
+            #  print(Lu)
             loss = Lx + args.lambda_u * Lu
 
             # if args.amp:
