@@ -26,6 +26,8 @@ from timm.utils import CheckpointSaver
 from pprint import pprint
 from torchvision.utils import make_grid
 from matplotlib import pyplot as plt
+# custom module
+from custom_module import CosineAnnealingWarmUpRestarts
 
 logger = logging.getLogger(__name__)
 best_acc = 0
@@ -262,8 +264,12 @@ def main():
 
     # Set optimizer
     #  optimizer = optim.SGD(grouped_parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.wdecay, nesterov=args.nesterov)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=500)
+    # optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=500)
+
+    #### use custom scheduler
+    optimizer = optim.AdamW(grouped_parameters, lr=0, weight_decay=args.wdecay)
+    scheduler = CosineAnnealingWarmUpRestarts(optimizer=optimizer, T_0=500, T_mult=1, eta_max=args.lr, T_up=5, gamma=0.5)
 
     model.zero_grad()
     # Set saver
