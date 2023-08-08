@@ -23,6 +23,9 @@ import shutil
 import os
 import numpy as np
 from timm.utils import CheckpointSaver
+from pprint import pprint
+from torchvision.utils import make_grid
+from matplotlib import pyplot as plt
 
 logger = logging.getLogger(__name__)
 best_acc = 0
@@ -75,11 +78,11 @@ group.add_argument('--nesterov', action='store_true',
                    help='use nesterov')
 group.add_argument('--lambda_u', type=float, metavar='λ', default=1,
                    help='unlabeled loss weight for FixMatch, default=1')
-parser.add_argument('--T', default=1, type=float,
+group.add_argument('--T', default=1, type=float,
                     help='pseudo label temperature, default=1')
-parser.add_argument('--threshold', default=0.95, type=float,
+group.add_argument('--threshold', default=0.95, type=float,
                     help='pseudo label threshold, default=0.95')
-parser.add_argument('--mu', default=7, type=int,
+group.add_argument('--mu', default=7, type=int,
                     help='coefficient of unlabeled batch size, default=7')
 # MISCELLANEOUS SETTINGS
 group = parser.add_argument_group('Miscellaneous parameters')
@@ -257,6 +260,7 @@ def main():
 
     # Set optimizer
     optimizer = optim.SGD(grouped_parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.wdecay, nesterov=args.nesterov)
+    #  optimizer = optim.AdamW(grouped_parameters, lr=args.lr, weight_decay=args.wdecay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=200)
 
     model.zero_grad()
@@ -270,8 +274,7 @@ def main():
 
     train(args, labeled_train_dataloader, unlabeled_train_dataloader, test_dataloader,
           model, optimizer, scheduler, saver=saver)
-    # calc. Loss_supervised
-    # calc. Loss_unsupervised with confidence threshold
+
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, scheduler, saver):
     global best_acc
@@ -346,15 +349,22 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
             mask = max_probs.ge(args.threshold).float()
+            ### DEBUG
+            #  print('=============')
+            #  denorm_tf = transforms.Compose([
+                #  transforms.Normalize(mean=[0, 0, 0], std=[1/x for x in args.std]),
+                #  transforms.Normalize(mean=[-x for x in args.mean], std=[1, 1, 1]),
+                #  ])
+            #  print(pseudo_label)
+            #  for target, prob in zip(targets_u.detach().tolist(), max_probs.detach().tolist()):
+                #  print(f'{target} / {prob:.4f}')
+            #  plt.imshow(make_grid(denorm_tf(inputs.detach().cpu()), normaliz=True).permute(1,2,0))
+            #  plt.show()
+            #########
 
-            #  print('u_s ', logits_u_s)
-            #  print('target_u  ', targets_u)
-            #  print('CE ', F.cross_entropy(logits_u_s, targets_u,
-                                  #  reduction='none'))
-            #  print('mask ', mask)
             Lu = (F.cross_entropy(logits_u_s, targets_u,
                                   reduction='none') * mask).mean()
-            #  print(Lu)
+
             loss = Lx + args.lambda_u * Lu
 
             # if args.amp:
@@ -436,6 +446,7 @@ def test(args, test_loader, model):
         test_loader = tqdm(test_loader,
                            disable=args.local_rank not in [-1, 0])
 
+    #  forDebug = [] # DEBUG
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(test_loader):
             data_time.update(time.time() - end)
@@ -452,6 +463,7 @@ def test(args, test_loader, model):
             top5.update(prec5.item(), inputs.shape[0])
             batch_time.update(time.time() - end)
             end = time.time()
+            #  forDebug.append(prec1.item()) # DEBUG
             if not args.no_progress:
                 test_loader.set_description("Test Iter: {batch:4}/{iter:4}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. top1: {top1:.2f}. top5: {top5:.2f}. ".format(
                     batch=batch_idx + 1,
@@ -465,6 +477,7 @@ def test(args, test_loader, model):
         if not args.no_progress:
             test_loader.close()
 
+    #  pprint(forDebug) # DEBUG
     logger.info("top-1 acc: {:.2f}".format(top1.avg))
     logger.info("top-5 acc: {:.2f}".format(top5.avg))
     return losses.avg, top1.avg
