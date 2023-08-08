@@ -56,6 +56,8 @@ group.add_argument('--labeled-img-dir', type=str, metavar='DIR',
                    help='labeled image directory')
 group.add_argument('--unlabeled-img-dir', type=str, metavar='DIR',
                    help='unlabeled image directory')
+group.add_argument('--test-img-dir', type=str, metavar='DIR',
+                   help='test image directory')
 group.add_argument('--mean', type=float, nargs=3, default=[0.4594, 0.5552, 0.3630], metavar='MEAN',
                    help='Override mean pixel value of dataset')
 group.add_argument('--std', type=float, nargs=3, default=[0.1445, 0.1309, 0.1556], metavar='STD',
@@ -231,7 +233,7 @@ def main():
         transform=TransformFixMatch(size=args.img_size, mean=args.mean, std=args.std),
         )
     test_dataset = ImageFolder(
-        root=args.unlabeled_img_dir + '/../validation/',
+        root=args.test_img_dir,
         transform=test_tf,
         class_map=args.class_map
         )
@@ -259,9 +261,9 @@ def main():
     ]
 
     # Set optimizer
-    optimizer = optim.SGD(grouped_parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.wdecay, nesterov=args.nesterov)
-    #  optimizer = optim.AdamW(grouped_parameters, lr=args.lr, weight_decay=args.wdecay)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=200)
+    #  optimizer = optim.SGD(grouped_parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.wdecay, nesterov=args.nesterov)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=500)
 
     model.zero_grad()
     # Set saver
@@ -277,6 +279,9 @@ def main():
 
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, scheduler, saver):
+    print('evaluate initial model')
+    pre_loss, pre_acc = test(args, test_loader, model)
+
     global best_acc
     test_accs = []
     end = time.time()
