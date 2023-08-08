@@ -1,10 +1,11 @@
+import ast
 import logging
-
+import argparse
 import torch
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['get_mean_and_std', 'accuracy', 'AverageMeter']
+__all__ = ['get_mean_and_std', 'accuracy', 'AverageMeter', 'ParseKwargs']
 
 
 def get_mean_and_std(dataset):
@@ -59,3 +60,16 @@ class AverageMeter(object):
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+
+class ParseKwargs(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        kw = {}
+        for value in values:
+            key, value = value.split('=')
+            try:
+                kw[key] = ast.literal_eval(value)
+            except ValueError:
+                kw[key] = str(value)  # fallback to string (avoid need to escape on command line)
+            except SyntaxError:
+                kw[key] = str(value)  # fallback to string (avoid need to escape on command line)
+        setattr(namespace, self.dest, kw)

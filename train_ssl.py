@@ -15,7 +15,7 @@ from torch import optim
 from torch.nn import functional as F
 # utils
 from pprint import pprint
-from utils import AverageMeter, accuracy
+from utils import AverageMeter, accuracy, ParseKwargs
 from tqdm import tqdm
 import time
 import logging
@@ -26,6 +26,12 @@ from timm.utils import CheckpointSaver
 from pprint import pprint
 from torchvision.utils import make_grid
 from matplotlib import pyplot as plt
+
+try:
+    import wandb
+    has_wandb=True
+except:
+    has_wandb=False
 
 logger = logging.getLogger(__name__)
 best_acc = 0
@@ -109,6 +115,10 @@ group.add_argument("--local_rank", type=int, default=-1,
                     help="For distributed training: local_rank")
 group.add_argument('--no-progress', action='store_true',
                     help="don't use progress bar")
+group.add_argument('--log-wandb', action='store_true',
+                    help="use wandb")
+group.add_argument('--kwargs-wandb', nargs='*', default={}, action=ParseKwargs)
+
 
 class ImageFolder(Dataset):
     def __init__(self, root, transform=None, class_map=None) -> None:
@@ -190,6 +200,8 @@ def de_interleave(x, size):
 
 def main():
     args=parser.parse_args()
+
+
 
     if args.local_rank == -1:
         device = torch.device('cuda', 0)
@@ -273,7 +285,14 @@ def main():
         checkpoint_dir=args.save_path,
         max_history=args.checkpoint_hist
     )
-
+    if args.log_wandb:
+        if has_wandb:
+            wandb.init(config=args, **args.kwargs_wandb)
+        else:
+            print(
+                "You've requested to log metrics to wandb but package not found"
+                "Metrics not being logged to wandb, try `pip install wandb`"
+            )
     train(args, labeled_train_dataloader, unlabeled_train_dataloader, test_dataloader,
           model, optimizer, scheduler, saver=saver)
 
@@ -405,7 +424,16 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
         if not args.no_progress:
             p_bar.close()
-
+        if args.log_wandb and has_wandb:
+            wandb.log({
+                    "epoch":epoch + 1,
+                    "batch":batch_idx + 1,
+                    "lr":scheduler.get_last_lr()[0],
+                    "train_loss":losses.avg,
+                    "train_loss_x":losses_x.avg,
+                    "train_loss_u":losses_u.avg,
+                    "mask":mask_probs.avg
+            })
         # if args.use_ema:
         #     test_model = ema_model.ema
         # else:
@@ -482,6 +510,13 @@ def test(args, test_loader, model):
         if not args.no_progress:
             test_loader.close()
 
+        if args.log_wandb and has_wandb:
+            wandb.log({
+                    "batch":batch_idx + 1,
+                    "test_loss":losses.avg,
+                    "test_top1":top1.avg,
+                    "test_top5":top5.avg,
+            })
     #  pprint(forDebug) # DEBUG
     logger.info("top-1 acc: {:.2f}".format(top1.avg))
     logger.info("top-5 acc: {:.2f}".format(top5.avg))
