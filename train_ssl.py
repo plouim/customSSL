@@ -6,6 +6,7 @@ from PIL import Image
 from torchvision import transforms
 from randaugment import RandAugmentMC
 from torch.utils.data import Dataset, DataLoader, RandomSampler, SequentialSampler
+from datasets import SSLDataset
 from pathlib import Path
 # model
 import torch
@@ -52,10 +53,12 @@ group.add_argument('--class-map', type=str, metavar='MAP',
                    help='class map file')
 group.add_argument('-b', '--batch-size', type=int, default=64, metavar='N',
                    help='Input batch size for training (default: 64)')
-group.add_argument('-vb', '--validation-batch-size', type=int, default=None, metavar='N',
-                   help='Validation batch size override (default: None)')
+# group.add_argument('-vb', '--validation-batch-size', type=int, default=None, metavar='N',
+#                    help='Validation batch size override (default: None)')
 group.add_argument('--epochs', type=int, default=100, metavar='EPOCH',
                    help='epoch')
+group.add_argument('--eval-step', type=int, metavar='STEP', default=50,
+                   help='evaluation step')
 ## DATASET SETTINGS
 group = parser.add_argument_group('Dataset setting')
 group.add_argument('--labeled-img-dir', type=str, metavar='DIR',
@@ -70,12 +73,10 @@ group.add_argument('--std', type=float, nargs=3, default=[0.1445, 0.1309, 0.1556
                    help='Override std deviation of dataset')
 group.add_argument('--img-size', type=int, metavar='SIZE',
                    help='img size')
-group.add_argument('--eval-step', type=int, metavar='STEP', default=50,
-                   help='evaluation step')
 # OPTIMIZER SETTINGS
 group = parser.add_argument_group('Optimizer setting')
-group.add_argument('--opt', type=str, metavar='OPT',
-                   help='set optimizer')
+# group.add_argument('--opt', type=str, metavar='OPT',
+#                    help='set optimizer')
 group.add_argument('--lr', type=float, metavar='LR', default=0.03,
                    help='learning rate, default=0.03')
 group.add_argument('--momentum', type=float, metavar='MNT', default=0.9,
@@ -96,11 +97,13 @@ group.add_argument('--mu', default=7, type=int,
 group = parser.add_argument_group('Miscellaneous parameters')
 group.add_argument('--seed', type=int, default=42, metavar='S',
                    help='random seed (default: 42)')
-group.add_argument('--log-interval', type=int, default=50, metavar='N',
-                   help='how many batches to wait before logging')
+# group.add_argument('--log-interval', type=int, default=50, metavar='N',
+#                    help='how many batches to wait before logging')
 group.add_argument('--checkpoint-hist', type=int, default=1, metavar='N',
                    help='number of checkpoints to keep (default: 1)')
 group.add_argument("--rank", default=0, type=int)
+group.add_argument("--local_rank", type=int, default=-1,
+                    help="For distributed training: local_rank")
 group.add_argument("--save-path", type=str, default='output',
                    help='path to save')
 group.add_argument("--save-best", type=str, default='model_best.pth.tar',
@@ -111,8 +114,6 @@ group.add_argument("--num-workers", type=int, default=4,
                    help='the number of worker, default=4')
 group.add_argument("--device", type=str, default='cuda',
                    help='device')
-group.add_argument("--local_rank", type=int, default=-1,
-                    help="For distributed training: local_rank")
 group.add_argument('--no-progress', action='store_true',
                     help="don't use progress bar")
 group.add_argument('--log-wandb', action='store_true',
@@ -120,7 +121,7 @@ group.add_argument('--log-wandb', action='store_true',
 group.add_argument('--kwargs-wandb', nargs='*', default={}, action=ParseKwargs)
 
 
-class ImageFolder(Dataset):
+class ImageFolder_tmp(Dataset):
     def __init__(self, root, transform=None, class_map=None) -> None:
         super().__init__()
         self.root = root
@@ -157,6 +158,8 @@ class ImageFolder(Dataset):
             img = self.tranform(img)
         return img, label
     
+
+    
 class TransformFixMatch():
     def __init__(self, size, mean, std):
         self.weak = transforms.Compose([
@@ -164,21 +167,24 @@ class TransformFixMatch():
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(size=size,
                                   padding=int(size*0.125),
-                                  padding_mode='reflect')])
+                                  padding_mode='reflect'),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std),
+            ])
         self.strong = transforms.Compose([
             transforms.Resize((size,size)),
             transforms.RandomCrop(size=size,
                                   padding=int(size*0.125),
                                   padding_mode='reflect'),
-            RandAugmentMC(n=2, m=10)])
-        self.normalize = transforms.Compose([
+            RandAugmentMC(n=2, m=10),
             transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std)])
+            transforms.Normalize(mean=mean, std=std),
+            ])
 
     def __call__(self, x):
         weak = self.weak(x)
         strong = self.strong(x)
-        return self.normalize(weak), self.normalize(strong)
+        return weak, strong
 
 def save_checkpoint(state, is_best, checkpoint, filename='checkpoint.pth.tar'):
     filepath = os.path.join(checkpoint, filename)
@@ -207,58 +213,64 @@ def main():
         device = torch.device('cuda', 0)
         args.world_size = 1
         args.n_gpu = torch.cuda.device_count()
+
     # Set seed
     timm.utils.random_seed(args.seed, args.rank)
-    # define weak, strong tranformation
-    weak_tf = transforms.Compose([
-        transforms.Resize((args.img_size,args.img_size)),
-        transforms.ToTensor(),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomCrop(size=args.img_size,
-                                padding=int(args.img_size*0.125),
-                                padding_mode='reflect'),
-        transforms.Normalize(mean=args.mean, std=args.std)
-    ])
-    strong_tf = transforms.Compose([
-            transforms.Resize((args.img_size,args.img_size)),
-            transforms.ToTensor(),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=args.img_size,
-                                  padding=int(args.img_size*0.125),
-                                  padding_mode='reflect'),
-            RandAugmentMC(n=2, m=10),
-            transforms.Normalize(mean=args.mean, std=args.std)
-    ])
+
+    # Load labeled dataset, unlabeled dataset using waek, strong transformation
     test_tf = transforms.Compose([
             transforms.Resize((args.img_size,args.img_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=args.mean, std=args.std)
         ])
-    # Load labeled dataset, unlabeled dataset using waek, strong transformation
-    labeled_train_dataset = ImageFolder(
+    fixmatch_tf = TransformFixMatch(size=args.img_size, mean=args.mean, std=args.std)
+
+    labeled_train_dataset = SSLDataset(
         root=args.labeled_img_dir,
-        transform=weak_tf,
-        class_map=args.class_map
+        class_map=args.class_map,
+        transform=fixmatch_tf.weak,
         )
-    unlabeled_train_dataset = ImageFolder(
-        root=args.unlabeled_img_dir,
-        transform=TransformFixMatch(size=args.img_size, mean=args.mean, std=args.std),
+    unlabeled_train_dataset = SSLDataset(
+        root=args.labeled_img_dir,
+        class_map=None,
+        transform=fixmatch_tf,
+        has_label=False
         )
-    test_dataset = ImageFolder(
+    test_dataset = SSLDataset(
         root=args.test_img_dir,
-        transform=test_tf,
-        class_map=args.class_map
+        class_map=args.class_map,
+        transform=test_tf
         )
     
     # Get dataloader
     train_sampler = RandomSampler
     test_sampler = SequentialSampler
-    labeled_train_dataloader=DataLoader(labeled_train_dataset, batch_size=args.batch_size, sampler=train_sampler(labeled_train_dataset), num_workers=args.num_workers)
-    unlabeled_train_dataloader=DataLoader(unlabeled_train_dataset, batch_size=args.batch_size*args.mu, sampler=train_sampler(unlabeled_train_dataset), num_workers=args.num_workers)
-    test_dataloader=DataLoader(test_dataset, batch_size=args.batch_size, sampler=test_sampler(test_dataset), num_workers=args.num_workers)
+    labeled_train_dataloader=DataLoader(
+        labeled_train_dataset,
+        batch_size=args.batch_size,
+        sampler=train_sampler(labeled_train_dataset),
+        num_workers=args.num_workers
+        )
+    unlabeled_train_dataloader=DataLoader(
+        unlabeled_train_dataset,
+        batch_size=args.batch_size*args.mu,
+        sampler=train_sampler(unlabeled_train_dataset),
+        num_workers=args.num_workers
+        )
+    test_dataloader=DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        sampler=test_sampler(test_dataset),
+        num_workers=args.num_workers
+        )
 
     # Load model
-    model = create_model(args.model, checkpoint_path=args.initial_checkpoint, num_classes=args.num_classes, pretrained=args.pretrained)
+    model = create_model(
+        args.model,
+        checkpoint_path=args.initial_checkpoint,
+        num_classes=args.num_classes,
+        pretrained=args.pretrained
+        )
     
     # if args.local_rank == 0:
     #     torch.distributed.barrier()
