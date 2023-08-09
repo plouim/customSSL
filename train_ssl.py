@@ -274,7 +274,7 @@ def main():
 
     # Set optimizer
     #  optimizer = optim.SGD(grouped_parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.wdecay, nesterov=args.nesterov)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
+    optimizer = optim.AdamW(grouped_parameters, lr=args.lr, weight_decay=args.wdecay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=5000)
 
     model.zero_grad()
@@ -298,9 +298,6 @@ def main():
 
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, scheduler, saver):
-    print('evaluate initial model')
-    pre_loss, pre_acc = test(args, test_loader, model)
-
     global best_acc
     test_accs = []
     end = time.time()
@@ -421,19 +418,19 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     loss_u=losses_u.avg,
                     mask=mask_probs.avg))
                 p_bar.update()
+            if args.log_wandb and has_wandb:
+                wandb.log({
+                        "epoch":epoch + 1,
+                        "lr":scheduler.get_last_lr()[0],
+                        "train_loss":losses.avg,
+                        "train_loss_x":losses_x.avg,
+                        "train_loss_u":losses_u.avg,
+                        "mask":mask_probs.avg
+                })
 
         if not args.no_progress:
             p_bar.close()
-        if args.log_wandb and has_wandb:
-            wandb.log({
-                    "epoch":epoch + 1,
-                    "batch":batch_idx + 1,
-                    "lr":scheduler.get_last_lr()[0],
-                    "train_loss":losses.avg,
-                    "train_loss_x":losses_x.avg,
-                    "train_loss_u":losses_u.avg,
-                    "mask":mask_probs.avg
-            })
+
         # if args.use_ema:
         #     test_model = ema_model.ema
         # else:
@@ -461,8 +458,11 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     if not os.path.isdir(args.save_path):
                         os.mkdir(args.save_path)
                     saver.save_checkpoint(epoch, metric=acc)
-
             test_accs.append(test_acc)
+            wandb.log({
+                "test_loss":test_loss,
+                "test_acc":test_acc
+                }, step=wandb.run.step)
             logger.info('Best top-1 acc: {:.2f}'.format(best_acc))
             logger.info('Mean top-1 acc: {:.2f}\n'.format(
                 np.mean(test_accs[-20:])))
@@ -510,13 +510,6 @@ def test(args, test_loader, model):
         if not args.no_progress:
             test_loader.close()
 
-        if args.log_wandb and has_wandb:
-            wandb.log({
-                    "batch":batch_idx + 1,
-                    "test_loss":losses.avg,
-                    "test_top1":top1.avg,
-                    "test_top5":top5.avg,
-            })
     #  pprint(forDebug) # DEBUG
     logger.info("top-1 acc: {:.2f}".format(top1.avg))
     logger.info("top-5 acc: {:.2f}".format(top5.avg))
